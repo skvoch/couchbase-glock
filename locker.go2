@@ -1,0 +1,82 @@
+package cb_glock
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/couchbase/gocb/v2"
+)
+
+type Option func(*Locker) error
+
+func WithBucket(bucket *gocb.Bucket) Option {
+	return func(locker * Locker) error {
+		if bucket == nil {
+			return fmt.Errorf("failed to set bucket, bucket is nil")
+		}
+
+		locker.bucket = bucket
+		return nil
+	}
+}
+
+func WithCluster(cluster *gocb.Cluster) Option {
+	return func(locker * Locker) error {
+		if cluster == nil {
+			return fmt.Errorf("failed to set cluster, cluster is nil")
+		}
+
+		locker.cluster = cluster
+
+		return nil
+	}
+}
+
+func WithLockDuration(lockDuration time.Duration) Option {
+	return func(locker *Locker) error {
+		locker.lockDuration = lockDuration
+
+		return nil
+	}
+}
+
+type Locker struct {
+	bucket *gocb.Bucket
+	cluster *gocb.Cluster
+	lockDuration time.Duration
+}
+
+func New(opts ...Option) (*Locker,error) {
+	var locker Locker
+
+
+	for _, opt := range opts {
+		if err := opt(&locker); err != nil {
+			return nil, fmt.Errorf("failed to set option: %w", err)
+		}
+	}
+
+	return &locker, nil
+}
+
+func (l *Locker) GetAndLock(type T)(where string) ([]*T, error){
+	query := fmt.Sprintf(`UPDATE %s SET _cb_glock_locked = NOW_MILLIS() 
+		WHERE %s AND (_cb_glock_locked - NOW_MILLIS() > %v ))`, l.bucket.Name(), where, l.lockDuration.Milliseconds())
+	rows, err := l.cluster.Query(query, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get and lock: failed to do query: %w", err)
+	}
+
+	var result []*T
+
+	for rows.Next() {
+		item := T
+		if err := rows.Row(&item); err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+
+		result = append(result, item)
+	}
+
+	return result, nil
+}

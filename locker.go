@@ -46,6 +46,19 @@ type Locker struct {
 	lockDuration time.Duration
 }
 
+type Result struct {
+	rows *gocb.QueryResult
+}
+
+func (r *Result) Row(valuePtr interface{}) error {
+	return r.rows.Row(valuePtr)
+}
+
+func (r *Result) Next() bool {
+	return r.rows.Next()
+}
+
+
 func New(opts ...Option) (*Locker,error) {
 	var locker Locker
 
@@ -59,24 +72,19 @@ func New(opts ...Option) (*Locker,error) {
 	return &locker, nil
 }
 
-func (l *Locker) GetAndLock(type T)(where string) ([]*T, error){
-	query := fmt.Sprintf(`UPDATE %s SET _cb_glock_locked = NOW_MILLIS() 
-		WHERE %s AND (_cb_glock_locked - NOW_MILLIS() > %v ))`, l.bucket.Name(), where, l.lockDuration.Milliseconds())
+func (l *Locker) GetAndLock(where string) (*Result, error) {
+	if where != "" {
+		where += " AND"
+	}
+	query := fmt.Sprintf(`UPDATE %s SET _cb_glock_locked = NOW_MILLIS() WHERE %s (NOW_MILLIS() - _cb_glock_locked > %v OR _cb_glock_locked IS NOT VALUED) RETURNING %s.*`, l.bucket.Name(), where, l.lockDuration.Milliseconds(), l.bucket.Name())
+
 	rows, err := l.cluster.Query(query, nil)
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get and lock: failed to do query: %w", err)
 	}
 
-	var result []*T
-
-	for rows.Next() {
-		item := T
-		if err := rows.Row(&item); err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
-		}
-
-		result = append(result, item)
-	}
-
-	return result, nil
+	return &Result{
+		rows: rows,
+	}, nil
 }
